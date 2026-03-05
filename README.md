@@ -80,7 +80,6 @@ Output:
 - `app.py` - main application
 - `build_exe.ps1` - build helper script
 - `requirements.txt` - Python dependencies
-- `PRODUCT_JOURNEY.md` - product evolution log
 
 ## License
 Choose and add a license file if you plan public reuse (for example MIT).
