@@ -1,85 +1,86 @@
-# Local Image Metadata Catalog
+# PromptLense
 
-Simple local GUI app for browsing generated images and viewing key generation metadata.
+Local desktop app (Tkinter) for browsing generated images and reading generation metadata.
 
-## Features
-- Select one folder or multiple folders
-- Scan images (`png/jpg/jpeg/webp/bmp/tiff`)
-- Thumbnail catalog with both vertical and horizontal scrolling
-- Adjustable thumbnail size
-- Adjustable number of thumbnail columns
-- Double-click preview window with full-size image viewing
-- Favorites support with star marking
-- Custom tags per image
-- Search/filter by filename and generation metadata fields
-- Sorting: `Newest` / `Oldest` across all selected folders
-- Right metadata panel with clean structure:
-  - Prompt
-  - Negative prompt
-  - Model
-  - Sampler
-  - Scheduler
-  - Seed
-  - CFG
-  - Steps
-  - Resolution
-  - File size
+## Highlights
+- Multi-folder scan (recursive)
+- Fast thumbnail catalog with adjustable:
+  - thumb size
+  - columns
+- Full preview on double-click with zoom controls
+- Structured metadata panel:
+  - Prompt / Negative prompt
+  - Model / Sampler / Scheduler
+  - Seed / CFG / Steps
+  - Resolution / file size
   - LoRAs
+- Favorites + custom tags
+- Search/filter/sort:
+  - global search (filename + key metadata fields)
+  - prompt tag filter
+  - favorites-only
+  - `Newest` / `Oldest`
+- Subfolder markers:
+  - colored dot per subfolder group
+  - tooltip with folder path
 
-## Install
+## Requirements
+- Windows
+- Python 3.10+ (tested with newer versions too)
+
+## Quick Start
 ```powershell
-cd "E:\AI code projects\One"
 py -m pip install -r requirements.txt
-```
-
-## Run
-```powershell
-cd "E:\AI code projects\One"
 py app.py
 ```
 
 ## Build EXE (Windows)
-### Option A: Use build script
+### Recommended (`onedir`)
 ```powershell
-cd "E:\AI code projects\One"
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
-- Default builds `onedir` (faster startup, recommended for local use).
-- Output: `dist\LocalImageMetadataCatalog\LocalImageMetadataCatalog.exe`
+Output:
+- `dist\LocalImageMetadataCatalog\LocalImageMetadataCatalog.exe`
 
-To build single-file EXE:
+### Single-file (`onefile`)
 ```powershell
-cd "E:\AI code projects\One"
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1 -OneFile
 ```
-- Output: `dist\LocalImageMetadataCatalog.exe`
+Output:
+- `dist\LocalImageMetadataCatalog.exe`
 
-### Option B: Manual build
-```powershell
-cd "E:\AI code projects\One"
-py -m pip install pyinstaller
-py -m PyInstaller --noconfirm --clean --windowed --name LocalImageMetadataCatalog --onedir app.py
-```
-
-## Notes
-- Metadata is read from `PIL.Image.info` and EXIF.
-- Automatic1111 parameters are parsed from the `parameters` block.
-- ComfyUI parameters are parsed from the `prompt` JSON graph when available.
-- Depending on generator/workflow, some fields may be missing.
-- Preview controls:
-  - Double-click thumbnail: open full preview
-  - Mouse wheel: zoom in/out
+## Controls
+- Catalog:
+  - mouse wheel: vertical scroll
+  - shift + wheel: horizontal scroll
+  - click thumbnail: select + metadata
+  - double-click thumbnail: full preview
+- Preview window:
+  - mouse wheel: zoom in/out
   - `+` / `-`: zoom
-  - `Ctrl + 0`: reset zoom to 100%
-  - `F`: fit image to window
-- Catalog filters:
-  - Search: filename, prompt, negative prompt, model, sampler, scheduler, seed, CFG, steps, resolution, LoRAs
-  - Prompt tag filter: searches inside positive prompt text metadata
-  - Favorites only: show only starred images
-- Metadata actions:
-  - `Copy prompt`: copies positive prompt of selected image
-  - `Favorite`: star/unstar selected image
-  - `Save tags`: saves comma-separated tags for selected image
-- Favorites and tags are stored in `.image_catalog_state.json` next to `app.py`.
-- Selected scan folders are restored on next launch and scanned automatically.
-- In EXE mode, state is stored next to the `.exe` as `.image_catalog_state.json`.
+  - `Ctrl + 0`: 100%
+  - `F`: fit to window
+
+## Data & State
+- App state file: `.image_catalog_state.json`
+- In script mode: stored next to `app.py`
+- In EXE mode: stored next to `.exe`
+- Stores:
+  - selected folders
+  - UI preferences
+  - favorites/tags
+
+## Metadata Notes
+- Reads metadata from `PIL.Image.info` and EXIF.
+- Parses A1111-style `parameters`.
+- Parses ComfyUI JSON blocks (`prompt` / workflow metadata).
+- Field availability depends on generator/workflow.
+
+## Project Files
+- `app.py` - main application
+- `build_exe.ps1` - build helper script
+- `requirements.txt` - Python dependencies
+- `PRODUCT_JOURNEY.md` - product evolution log
+
+## License
+Choose and add a license file if you plan public reuse (for example MIT).
