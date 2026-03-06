@@ -44,45 +44,45 @@ def get_app_dir() -> Path:
 
 STATE_FILE = get_app_dir() / ".image_catalog_state.json"
 PALETTE = {
-    "bg": "#f3effb",
-    "panel": "#ede6fa",
+    "bg": "#edf3f8",
+    "panel": "#e6edf4",
     "surface": "#ffffff",
-    "surface_alt": "#f6f1ff",
+    "surface_alt": "#f5f8fb",
     "surface_1": "#ffffff",
-    "surface_2": "#f7f2ff",
-    "surface_3": "#efe7fb",
-    "gradient_top": "#f7f2ff",
-    "gradient_mid": "#f2eafb",
-    "gradient_bottom": "#ede4f9",
-    "text": "#322547",
-    "muted": "#7b6a96",
-    "accent": "#8f79d8",
-    "accent_hover": "#9f8ae4",
-    "accent_active": "#7e66cb",
-    "accent_muted": "#c8b9ea",
-    "border": "#d7caee",
-    "focus_ring": "#a08bd8",
-    "danger": "#b54b7e",
-    "chip_bg": "#ece3fb",
-    "chip_fg": "#4a3680",
-    "chip_soft_bg": "#f1e9ff",
-    "chip_soft_fg": "#5f4f86",
-    "glass_prompt": "#f4efff",
-    "glass_negative": "#faedf5",
-    "glass_main": "#f0ecff",
-    "glass_misc": "#f5f1ff",
-    "shadow": "#dfd2f3",
-    "thumb_shadow": "#e9def6",
-    "thumb_bg": "#fdfcff",
-    "thumb_hover_bg": "#f8f5ff",
-    "thumb_selected_bg": "#f7f3ff",
-    "status_info": "#8f79d8",
-    "status_busy": "#a08bd8",
+    "surface_2": "#f7fbff",
+    "surface_3": "#ebf2f8",
+    "gradient_top": "#f7fbff",
+    "gradient_mid": "#eff5fb",
+    "gradient_bottom": "#e5edf6",
+    "text": "#1f2a37",
+    "muted": "#68768a",
+    "accent": "#2563eb",
+    "accent_hover": "#3b82f6",
+    "accent_active": "#1d4ed8",
+    "accent_muted": "#bfdbfe",
+    "border": "#d7e1eb",
+    "focus_ring": "#60a5fa",
+    "danger": "#cf5a73",
+    "chip_bg": "#dbeafe",
+    "chip_fg": "#1e40af",
+    "chip_soft_bg": "#eff6ff",
+    "chip_soft_fg": "#31527b",
+    "glass_prompt": "#f3f8ff",
+    "glass_negative": "#fff2f4",
+    "glass_main": "#f6fbff",
+    "glass_misc": "#f4f8fc",
+    "shadow": "#dce6f0",
+    "thumb_shadow": "#dde7f1",
+    "thumb_bg": "#fbfdff",
+    "thumb_hover_bg": "#f3f8ff",
+    "thumb_selected_bg": "#eef5ff",
+    "status_info": "#3b82f6",
+    "status_busy": "#2563eb",
     "status_ok": "#6f9f8a",
     "status_warn": "#b08f65",
-    "status_error": "#b54b7e",
-    "skeleton_base": "#ebe2fb",
-    "skeleton_shine": "#f5efff",
+    "status_error": "#cf5a73",
+    "skeleton_base": "#e5edf6",
+    "skeleton_shine": "#f7fbff",
 }
 SUBFOLDER_DOT_COLORS = [
     "#8a63d2",
@@ -500,11 +500,11 @@ class ImageMetadataViewer(tk.Tk):
             "file_title": PALETTE["accent_active"],
             "section": PALETTE["accent"],
             "section_negative": PALETTE["danger"],
-            "separator": "#b7a9d5",
-            "field_name": "#6a5795",
+            "separator": "#9fb3c8",
+            "field_name": "#436180",
             "field_value": PALETTE["text"],
         }
-        self._meta_start_color = "#b6aacd"
+        self._meta_start_color = "#a8b7c9"
         self.thumb_cells_by_path: dict[str, int] = {}
         self.thumb_inner_by_path: dict[str, int] = {}
         self.thumb_widget_by_path: dict[str, tuple[int, int | None]] = {}
@@ -515,6 +515,7 @@ class ImageMetadataViewer(tk.Tk):
         self._summary_flash_after_ids: dict[str, str] = {}
         self._summary_chip_hovered: dict[str, bool] = {}
         self._summary_chip_hover_border = self._mix_hex(PALETTE["accent_muted"], PALETTE["accent"], 0.75)
+        self.gallery_status_var = tk.StringVar(value="")
 
         self._load_state()
         self._thumb_last_applied_size = max(100, min(320, int(round(self.thumb_size_var.get()))))
@@ -547,9 +548,9 @@ class ImageMetadataViewer(tk.Tk):
         )
         self.style.configure(
             "Title.TLabel",
-            background=PALETTE["panel"],
+            background=PALETTE["bg"],
             foreground=PALETTE["text"],
-            font=("Segoe UI Semibold", 13),
+            font=("Segoe UI Semibold", 16),
         )
         self.style.configure(
             "Muted.TLabel",
@@ -568,7 +569,7 @@ class ImageMetadataViewer(tk.Tk):
             background=PALETTE["accent"],
             foreground="#ffffff",
             bordercolor=PALETTE["accent"],
-            padding=(14, 8),
+            padding=(16, 9),
             relief="flat",
             font=("Segoe UI Semibold", 10),
         )
@@ -659,7 +660,7 @@ class ImageMetadataViewer(tk.Tk):
             "ChipValue.TLabel",
             background=PALETTE["chip_soft_bg"],
             foreground=PALETTE["chip_soft_fg"],
-            font=("Segoe UI Semibold", 10),
+            font=("Segoe UI Semibold", 11),
         )
 
     def _build_main_menu(self) -> None:
@@ -889,93 +890,114 @@ class ImageMetadataViewer(tk.Tk):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        top = ttk.Frame(self, padding=10, style="Root.TFrame")
+        top = ttk.Frame(self, padding=(14, 12, 14, 10), style="Root.TFrame")
         top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(0, weight=1)
 
         header_shell = tk.Frame(
             top,
-            bg=PALETTE["surface_2"],
+            bg=PALETTE["surface_1"],
             highlightthickness=1,
             highlightbackground=PALETTE["border"],
             bd=0,
-            padx=10,
-            pady=8,
+            padx=14,
+            pady=14,
         )
         header_shell.grid(row=0, column=0, sticky="ew")
         header_shell.columnconfigure(0, weight=1)
+        header_shell.columnconfigure(1, weight=0)
 
-        controls_row = tk.Frame(header_shell, bg=PALETTE["surface_2"])
-        controls_row.grid(row=0, column=0, sticky="ew")
-        controls_row.columnconfigure(0, weight=1)
+        utility_card = tk.Frame(
+            header_shell,
+            bg=PALETTE["surface_1"],
+            highlightthickness=0,
+            highlightbackground=PALETTE["surface_1"],
+            bd=0,
+            padx=0,
+            pady=0,
+        )
+        utility_card.grid(row=0, column=1, sticky="e")
+        utility_card.columnconfigure(1, weight=1)
 
-        controls_left = tk.Frame(controls_row, bg=PALETTE["surface_2"])
+        actions_row = tk.Frame(header_shell, bg=PALETTE["surface_1"])
+        actions_row.grid(row=0, column=0, sticky="ew", padx=(0, 14))
+        actions_row.columnconfigure(0, weight=1)
+
+        controls_left = tk.Frame(actions_row, bg=PALETTE["surface_1"])
         controls_left.grid(row=0, column=0, sticky="w")
-        controls_right = tk.Frame(controls_row, bg=PALETTE["surface_2"])
+        controls_right = tk.Frame(actions_row, bg=PALETTE["surface_1"])
         controls_right.grid(row=0, column=1, sticky="e")
 
         self.add_btn = ttk.Button(controls_left, text="[+] Add folder", command=self.add_folder, style="Soft.TButton")
         self.add_btn.pack(side="left", padx=(0, 8))
         self.clear_btn = ttk.Button(controls_left, text="[-] Clear folders", command=self.clear_folders, style="Soft.TButton")
-        self.clear_btn.pack(side="left", padx=(0, 12))
+        self.clear_btn.pack(side="left", padx=(0, 8))
         self.folders_toggle_btn = ttk.Button(controls_left, text="[F] Hide folders", command=self._toggle_folders_panel, style="Soft.TButton")
-        self.folders_toggle_btn.pack(side="left", padx=(0, 12))
+        self.folders_toggle_btn.pack(side="left", padx=(0, 10))
         self.scan_btn = ttk.Button(controls_left, text="[S] Scan", command=self.scan_images, style="Accent.TButton")
-        self.scan_btn.pack(side="left", padx=(0, 8))
+        self.scan_btn.pack(side="left")
         self._enable_button_hover_animation(self.add_btn, is_accent=False)
         self._enable_button_hover_animation(self.clear_btn, is_accent=False)
         self._enable_button_hover_animation(self.folders_toggle_btn, is_accent=False)
         self._enable_button_hover_animation(self.scan_btn, is_accent=True)
 
         tk.Label(
-            controls_right,
+            utility_card,
             text="Thumb size",
-            bg=PALETTE["surface_2"],
+            bg=PALETTE["surface_1"],
             fg=PALETTE["muted"],
             font=("Segoe UI", 9),
-        ).pack(side="left", padx=(0, 6))
+        ).grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.thumb_size_scale = ttk.Scale(
-            controls_right,
+            utility_card,
             from_=100,
             to=320,
             variable=self.thumb_size_var,
             command=self.on_thumb_size_changed,
         )
-        self.thumb_size_scale.pack(side="left", padx=(0, 12))
+        self.thumb_size_scale.grid(row=0, column=1, sticky="ew", padx=(0, 12))
         self.thumb_size_scale.bind("<ButtonRelease-1>", lambda _e: self._apply_thumb_size_change(force=True))
 
         tk.Label(
-            controls_right,
+            utility_card,
             text="Columns",
-            bg=PALETTE["surface_2"],
+            bg=PALETTE["surface_1"],
             fg=PALETTE["muted"],
             font=("Segoe UI", 9),
-        ).pack(side="left", padx=(0, 6))
+        ).grid(row=0, column=2, sticky="e", padx=(4, 6))
         self.columns_spin = ttk.Spinbox(
-            controls_right,
+            utility_card,
             from_=2,
             to=12,
             textvariable=self.columns_var,
-            width=7,
+            width=5,
             command=self.on_layout_changed,
             font=("Segoe UI Semibold", 12),
         )
-        self.columns_spin.pack(side="left")
+        self.columns_spin.grid(row=0, column=3, sticky="e")
         self.columns_spin.bind("<Return>", lambda _e: self._apply_layout_change())
         self.columns_spin.bind("<FocusOut>", lambda _e: self._apply_layout_change())
 
-        filter_row = tk.Frame(header_shell, bg=PALETTE["surface_3"])
-        filter_row.grid(row=1, column=0, sticky="ew", pady=(8, 0), padx=2)
+        filter_row = tk.Frame(
+            header_shell,
+            bg=PALETTE["surface_2"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            bd=0,
+            padx=10,
+            pady=10,
+        )
+        filter_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         filter_row.columnconfigure(1, weight=1)
 
-        tk.Label(filter_row, text="Search", bg=PALETTE["surface_3"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
+        tk.Label(filter_row, text="Search", bg=PALETTE["surface_2"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
         self.search_entry = ttk.Entry(filter_row, textvariable=self.search_var)
-        self.search_entry.grid(row=0, column=1, sticky="ew", padx=(8, 10))
+        self.search_entry.grid(row=0, column=1, sticky="ew", padx=(10, 14), ipady=5)
         self.search_entry.bind("<KeyRelease>", lambda _e: self._schedule_apply_filters())
 
-        tk.Label(filter_row, text="Prompt tag", bg=PALETTE["surface_3"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=0, column=2, sticky="e", padx=(0, 6))
+        tk.Label(filter_row, text="Prompt tag", bg=PALETTE["surface_2"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=0, column=2, sticky="e", padx=(0, 6))
         self.tag_entry = ttk.Entry(filter_row, textvariable=self.tag_filter_var, width=18)
-        self.tag_entry.grid(row=0, column=3, sticky="w", padx=(0, 10))
+        self.tag_entry.grid(row=0, column=3, sticky="w", padx=(0, 12), ipady=5)
         self.tag_entry.bind("<KeyRelease>", lambda _e: self._schedule_apply_filters())
 
         self.favorites_only_chk = tk.Checkbutton(
@@ -983,9 +1005,9 @@ class ImageMetadataViewer(tk.Tk):
             text="Favorites only",
             variable=self.favorites_only_var,
             command=self.apply_filters,
-            bg=PALETTE["surface_3"],
+            bg=PALETTE["surface_2"],
             fg=PALETTE["text"],
-            activebackground=PALETTE["surface_3"],
+            activebackground=PALETTE["surface_2"],
             activeforeground=PALETTE["text"],
             selectcolor=PALETTE["surface_1"],
             font=("Segoe UI", 10),
@@ -994,7 +1016,7 @@ class ImageMetadataViewer(tk.Tk):
         )
         self.favorites_only_chk.grid(row=0, column=4, sticky="w", padx=(0, 10))
 
-        tk.Label(filter_row, text="Sort", bg=PALETTE["surface_3"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=0, column=5, sticky="e", padx=(0, 6))
+        tk.Label(filter_row, text="Sort", bg=PALETTE["surface_2"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=0, column=5, sticky="e", padx=(0, 6))
         self.sort_combo = ttk.Combobox(
             filter_row,
             textvariable=self.sort_var,
@@ -1018,39 +1040,11 @@ class ImageMetadataViewer(tk.Tk):
             padx=6,
             pady=4,
         )
-        self.folders_panel.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.folders_panel.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         self.folders_panel.columnconfigure(0, weight=1)
 
         self.folders_container = tk.Frame(self.folders_panel, bg=PALETTE["surface_1"], bd=0)
         self.folders_container.grid(row=0, column=0, sticky="ew")
-        self.status_pill = tk.Frame(
-            header_shell,
-            bg=PALETTE["surface_2"],
-            highlightthickness=1,
-            highlightbackground=PALETTE["border"],
-            bd=0,
-            padx=8,
-            pady=4,
-        )
-        self.status_pill.grid(row=3, column=0, sticky="w", pady=(6, 0))
-        self.status_dot = tk.Canvas(
-            self.status_pill,
-            width=10,
-            height=10,
-            bg=PALETTE["surface_2"],
-            highlightthickness=0,
-            bd=0,
-        )
-        self.status_dot.pack(side="left", padx=(0, 6))
-        self._status_dot_item = self.status_dot.create_oval(1, 1, 9, 9, fill=PALETTE["status_info"], outline="")
-        self.status_label = tk.Label(
-            self.status_pill,
-            textvariable=self.status_var,
-            bg=PALETTE["surface_2"],
-            fg=PALETTE["muted"],
-            font=("Segoe UI", 9),
-        )
-        self.status_label.pack(side="left")
         self._set_status(self.status_var.get(), "info")
         self._apply_folders_panel_visibility()
 
@@ -1065,17 +1059,53 @@ class ImageMetadataViewer(tk.Tk):
         )
         body.grid(row=1, column=0, sticky="nsew")
 
-        left = ttk.Frame(body, padding=(10, 6, 6, 10), style="Panel.TFrame")
-        right = ttk.Frame(body, padding=(6, 6, 10, 10), style="Panel.TFrame")
+        left = tk.Frame(body, bg=PALETTE["panel"], padx=10, pady=8)
+        right = tk.Frame(body, bg=PALETTE["panel"], padx=8, pady=8)
         body.add(left, minsize=520, stretch="always")
         body.add(right, minsize=380)
 
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
 
-        self.canvas = tk.Canvas(left, highlightthickness=0, background=PALETTE["surface_3"])
-        self.v_scroll = ttk.Scrollbar(left, orient="vertical", command=self.canvas.yview)
-        self.h_scroll = ttk.Scrollbar(left, orient="horizontal", command=self.canvas.xview)
+        gallery_shell = tk.Frame(
+            left,
+            bg=PALETTE["surface_1"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            bd=0,
+            padx=10,
+            pady=10,
+        )
+        gallery_shell.grid(row=0, column=0, sticky="nsew")
+        gallery_shell.columnconfigure(0, weight=1)
+        gallery_shell.rowconfigure(1, weight=1)
+        gallery_head = tk.Frame(gallery_shell, bg=PALETTE["surface_1"])
+        gallery_head.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        gallery_head.columnconfigure(0, weight=1)
+        tk.Label(
+            gallery_head,
+            text="Gallery",
+            bg=PALETTE["surface_1"],
+            fg=PALETTE["text"],
+            font=("Segoe UI Semibold", 14),
+        ).grid(row=0, column=0, sticky="w")
+        self.gallery_status = tk.Label(
+            gallery_head,
+            textvariable=self.gallery_status_var,
+            bg=PALETTE["surface_1"],
+            fg=PALETTE["muted"],
+            font=("Segoe UI", 9),
+        )
+        self.gallery_status.grid(row=0, column=1, sticky="e")
+
+        canvas_wrap = tk.Frame(gallery_shell, bg=PALETTE["surface_3"], bd=0)
+        canvas_wrap.grid(row=1, column=0, sticky="nsew")
+        canvas_wrap.columnconfigure(0, weight=1)
+        canvas_wrap.rowconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(canvas_wrap, highlightthickness=0, background=PALETTE["surface_3"])
+        self.v_scroll = ttk.Scrollbar(canvas_wrap, orient="vertical", command=self.canvas.yview)
+        self.h_scroll = ttk.Scrollbar(canvas_wrap, orient="horizontal", command=self.canvas.xview)
         self.canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
 
         self.canvas_window = None
@@ -1094,13 +1124,27 @@ class ImageMetadataViewer(tk.Tk):
         right.columnconfigure(0, weight=1)
         right.rowconfigure(3, weight=1)
 
-        ttk.Label(right, text="Metadata", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        tk.Label(
+            right,
+            text="Inspector",
+            bg=PALETTE["panel"],
+            fg=PALETTE["text"],
+            font=("Segoe UI Semibold", 16),
+        ).grid(row=0, column=0, sticky="w", pady=(2, 8))
 
-        actions = ttk.Frame(right, style="Panel.TFrame")
-        actions.grid(row=1, column=0, sticky="ew", pady=(6, 6))
+        actions = tk.Frame(
+            right,
+            bg=PALETTE["surface_1"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            bd=0,
+            padx=12,
+            pady=10,
+        )
+        actions.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         actions.columnconfigure(1, weight=1)
 
-        actions_top = ttk.Frame(actions, style="Panel.TFrame")
+        actions_top = tk.Frame(actions, bg=PALETTE["surface_1"])
         actions_top.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
         self.copy_prompt_btn = ttk.Button(actions_top, text="[C] Copy prompt", style="Soft.TButton", command=self.copy_current_prompt)
         self.copy_prompt_btn.pack(side="left", padx=(0, 8))
@@ -1109,22 +1153,22 @@ class ImageMetadataViewer(tk.Tk):
         self._enable_button_hover_animation(self.copy_prompt_btn, is_accent=False)
         self._enable_button_hover_animation(self.favorite_btn, is_accent=False)
 
-        ttk.Label(actions, text="Tags", style="Muted.TLabel").grid(row=1, column=0, sticky="w")
+        tk.Label(actions, text="Tags", bg=PALETTE["surface_1"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
         self.current_tags_var = tk.StringVar(value="")
         self.current_tags_entry = ttk.Entry(actions, textvariable=self.current_tags_var)
-        self.current_tags_entry.grid(row=1, column=1, sticky="ew", padx=(0, 8))
+        self.current_tags_entry.grid(row=1, column=1, sticky="ew", padx=(0, 8), ipady=4)
         self.save_tags_btn = ttk.Button(actions, text="[T] Save tags", style="Soft.TButton", command=self.save_current_tags)
         self.save_tags_btn.grid(row=1, column=2, sticky="e")
         self._enable_button_hover_animation(self.save_tags_btn, is_accent=False)
 
         self.inspector_summary = tk.Frame(
             right,
-            bg=PALETTE["surface_2"],
+            bg=PALETTE["surface_1"],
             highlightthickness=1,
             highlightbackground=PALETTE["border"],
             bd=0,
-            padx=10,
-            pady=8,
+            padx=12,
+            pady=12,
         )
         self.inspector_summary.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         self.inspector_summary.columnconfigure(0, weight=1)
@@ -1136,19 +1180,19 @@ class ImageMetadataViewer(tk.Tk):
         tk.Label(
             self.inspector_summary,
             textvariable=self.meta_file_var,
-            bg=PALETTE["surface_2"],
+            bg=PALETTE["surface_1"],
             fg=PALETTE["text"],
-            font=("Segoe UI Semibold", 10),
+            font=("Segoe UI Semibold", 12),
             anchor="w",
         ).grid(row=0, column=0, columnspan=3, sticky="ew")
         tk.Label(
             self.inspector_summary,
             textvariable=self.meta_path_var,
-            bg=PALETTE["surface_2"],
+            bg=PALETTE["surface_1"],
             fg=PALETTE["muted"],
-            font=("Segoe UI", 8),
+            font=("Segoe UI", 9),
             anchor="w",
-        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(2, 8))
 
         self.summary_value_vars: dict[str, tk.StringVar] = {
             "Model": tk.StringVar(value="-"),
@@ -1165,13 +1209,13 @@ class ImageMetadataViewer(tk.Tk):
             chip = tk.Frame(
                 self.inspector_summary,
                 bg=PALETTE["chip_soft_bg"],
-                highlightthickness=2,
+                highlightthickness=1,
                 highlightbackground=PALETTE["accent_muted"],
                 bd=0,
-                padx=8,
-                pady=5,
+                padx=10,
+                pady=7,
             )
-            chip.grid(row=row, column=col, sticky="ew", padx=3, pady=3)
+            chip.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
             self.summary_chip_frames[field] = chip
             self._summary_chip_hovered[field] = False
             title_label = ttk.Label(chip, text=field, style="ChipTitle.TLabel", anchor="w")
@@ -1183,10 +1227,29 @@ class ImageMetadataViewer(tk.Tk):
                 widget.bind("<Enter>", lambda _e, w=widget, f=field: self._on_summary_widget_enter(w, f), add="+")
                 widget.bind("<Leave>", lambda _e, w=widget, f=field: self._on_summary_widget_leave(w, f), add="+")
 
-        meta_wrap = ttk.Frame(right, style="Surface.TFrame")
+        meta_wrap = tk.Frame(
+            right,
+            bg=PALETTE["surface_1"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            bd=0,
+            padx=0,
+            pady=0,
+        )
         meta_wrap.grid(row=3, column=0, sticky="nsew", pady=(0, 0))
         meta_wrap.columnconfigure(0, weight=1)
-        meta_wrap.rowconfigure(0, weight=1)
+        meta_wrap.rowconfigure(1, weight=1)
+
+        tk.Label(
+            meta_wrap,
+            text="Metadata details",
+            bg=PALETTE["surface_1"],
+            fg=PALETTE["muted"],
+            font=("Segoe UI Semibold", 10),
+            padx=14,
+            pady=10,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
 
         self.meta_text = tk.Text(
             meta_wrap,
@@ -1198,18 +1261,19 @@ class ImageMetadataViewer(tk.Tk):
             fg=PALETTE["text"],
             insertbackground=PALETTE["text"],
             relief="flat",
-            highlightthickness=1,
+            highlightthickness=0,
             highlightbackground=PALETTE["border"],
             highlightcolor=PALETTE["focus_ring"],
         )
         self.meta_scroll = ttk.Scrollbar(meta_wrap, orient="vertical", command=self.meta_text.yview)
         self.meta_text.configure(yscrollcommand=self.meta_scroll.set)
 
-        self.meta_text.grid(row=0, column=0, sticky="nsew")
-        self.meta_scroll.grid(row=0, column=1, sticky="ns")
+        self.meta_text.grid(row=1, column=0, sticky="nsew")
+        self.meta_scroll.grid(row=1, column=1, sticky="ns")
         self._configure_metadata_tags()
         self.meta_text.configure(state="disabled")
         self._sync_current_controls(None, None)
+        self._set_metadata_text("Select an image to inspect metadata\n\nUse single click for details and double-click for full preview.")
 
     def add_folder(self) -> None:
         selected = filedialog.askdirectory(title="Select a folder with images")
@@ -1311,8 +1375,6 @@ class ImageMetadataViewer(tk.Tk):
 
     def _set_status(self, text: str, kind: str = "info") -> None:
         self.status_var.set(text)
-        if not hasattr(self, "status_dot"):
-            return
         color_map = {
             "info": PALETTE["status_info"],
             "busy": PALETTE["status_busy"],
@@ -1321,7 +1383,9 @@ class ImageMetadataViewer(tk.Tk):
             "error": PALETTE["status_error"],
         }
         color = color_map.get(kind, PALETTE["status_info"])
-        self.status_dot.itemconfig(self._status_dot_item, fill=color)
+        if hasattr(self, "gallery_status"):
+            self.gallery_status_var.set(f"* {text}")
+            self.gallery_status.configure(fg=color if kind in {"warn", "error"} else PALETTE["muted"])
 
     def _load_state(self) -> None:
         if not STATE_FILE.exists():
@@ -1797,7 +1861,7 @@ class ImageMetadataViewer(tk.Tk):
         if not self.image_paths:
             total = len(self.all_image_paths)
             self._set_status(f"No images found for current filter | Total indexed: {total}", "warn")
-            self._set_metadata_text("No images found")
+            self._set_metadata_text("Nothing matched this filter\n\nTry a broader search, remove a tag filter, or disable favorites-only mode.")
             self.current_image_path = None
             self._sync_current_controls(None, None)
             self._thumb_rendering = False
@@ -1806,20 +1870,20 @@ class ImageMetadataViewer(tk.Tk):
 
         self._thumb_render_size = max(100, min(320, int(round(self.thumb_size_var.get()))))
         self._thumb_render_columns = self._safe_columns()
-        self._thumb_name_font = tkfont.Font(family="Segoe UI", size=10)
+        self._thumb_name_font = tkfont.Font(family="Segoe UI", size=9)
         name_line_h = int(self._thumb_name_font.metrics("linespace"))
         self._thumb_show_caption = self._thumb_render_size >= 150
-        self._thumb_caption_height = max(24, name_line_h + 10) if self._thumb_show_caption else 0
-        self._thumb_inner_pad = 6
-        self._thumb_cell_width = self._thumb_render_size + 16
+        self._thumb_caption_height = max(22, name_line_h + 8) if self._thumb_show_caption else 0
+        self._thumb_inner_pad = 8
+        self._thumb_cell_width = self._thumb_render_size + 22
         self._thumb_cell_height = (
             self._thumb_render_size
             + (self._thumb_inner_pad * 2)
             + self._thumb_caption_height
-            + 2
+            + 6
         )
-        self._thumb_cell_gap_x = 3
-        self._thumb_cell_gap_y = 3
+        self._thumb_cell_gap_x = 10
+        self._thumb_cell_gap_y = 10
         self._thumb_render_index = 0
         self._thumb_decode_token = token
         with self._thumb_prepare_lock:
@@ -1902,7 +1966,7 @@ class ImageMetadataViewer(tk.Tk):
         else:
             self.current_image_path = None
             self._sync_current_controls(None, None)
-            self._set_metadata_text("Select an image to view metadata")
+            self._set_metadata_text("Select an image to inspect metadata\n\nUse single click for details and double-click for full preview.")
 
         self._refresh_thumb_cell_highlight()
 
@@ -1935,7 +1999,7 @@ class ImageMetadataViewer(tk.Tk):
             x1,
             y1,
             fill=PALETTE["thumb_shadow"],
-            outline=PALETTE["thumb_shadow"],
+            outline=PALETTE["surface_3"],
             width=1,
             tags=tags,
         )
@@ -1965,7 +2029,7 @@ class ImageMetadataViewer(tk.Tk):
                 img_x,
                 iy0 + pad + size + (caption_h / 2),
                 text=caption_text,
-                fill=PALETTE["text"],
+                fill=PALETTE["muted"],
                 font=font_obj,
                 anchor="center",
                 tags=tags,
@@ -2214,8 +2278,8 @@ class ImageMetadataViewer(tk.Tk):
             return
         image_item, text_item = widgets
         if self.current_image_path and key == str(self.current_image_path):
-            self.canvas.itemconfigure(shell, fill=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.18), outline=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.18))
-            self.canvas.itemconfigure(cell, outline=PALETTE["accent_active"], fill=PALETTE["thumb_selected_bg"])
+            self.canvas.itemconfigure(shell, fill=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.12), outline=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.12))
+            self.canvas.itemconfigure(cell, outline=PALETTE["accent_active"], fill=PALETTE["thumb_selected_bg"], width=2)
             self.canvas.itemconfigure(image_item, state="normal")
             if text_item is not None:
                 self.canvas.itemconfigure(text_item, fill=PALETTE["text"])
@@ -2223,18 +2287,18 @@ class ImageMetadataViewer(tk.Tk):
         if entering:
             self._hover_path_key = key
             self.canvas.configure(cursor="hand2")
-            self.canvas.itemconfigure(shell, fill=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent"], 0.12), outline=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent"], 0.12))
-            self.canvas.itemconfigure(cell, outline=self._mix_hex(PALETTE["border"], PALETTE["accent"], 0.25), fill=PALETTE["thumb_hover_bg"])
+            self.canvas.itemconfigure(shell, fill=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent"], 0.08), outline=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent"], 0.08))
+            self.canvas.itemconfigure(cell, outline=self._mix_hex(PALETTE["border"], PALETTE["accent"], 0.38), fill=PALETTE["thumb_hover_bg"], width=1)
             if text_item is not None:
                 self.canvas.itemconfigure(text_item, fill=PALETTE["text"])
         else:
             if self._hover_path_key == key:
                 self._hover_path_key = None
                 self.canvas.configure(cursor="")
-            self.canvas.itemconfigure(shell, fill=PALETTE["thumb_shadow"], outline=PALETTE["thumb_shadow"])
-            self.canvas.itemconfigure(cell, outline=PALETTE["border"], fill=PALETTE["thumb_bg"])
+            self.canvas.itemconfigure(shell, fill=PALETTE["thumb_shadow"], outline=PALETTE["surface_3"])
+            self.canvas.itemconfigure(cell, outline=PALETTE["border"], fill=PALETTE["thumb_bg"], width=1)
             if text_item is not None:
-                self.canvas.itemconfigure(text_item, fill=PALETTE["text"])
+                self.canvas.itemconfigure(text_item, fill=PALETTE["muted"])
 
     def _refresh_thumb_cell_highlight(self) -> None:
         selected_key = str(self.current_image_path) if self.current_image_path else ""
@@ -2245,17 +2309,17 @@ class ImageMetadataViewer(tk.Tk):
                 continue
             image_item, text_item = widgets
             if key == selected_key:
-                self.canvas.itemconfigure(shell, fill=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.18), outline=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.18))
-                self.canvas.itemconfigure(cell, outline=PALETTE["accent_active"], fill=PALETTE["thumb_selected_bg"])
+                self.canvas.itemconfigure(shell, fill=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.12), outline=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.12))
+                self.canvas.itemconfigure(cell, outline=PALETTE["accent_active"], fill=PALETTE["thumb_selected_bg"], width=2)
                 self.canvas.itemconfigure(image_item, state="normal")
                 if text_item is not None:
                     self.canvas.itemconfigure(text_item, fill=PALETTE["text"])
             else:
-                self.canvas.itemconfigure(shell, fill=PALETTE["thumb_shadow"], outline=PALETTE["thumb_shadow"])
-                self.canvas.itemconfigure(cell, outline=PALETTE["border"], fill=PALETTE["thumb_bg"])
+                self.canvas.itemconfigure(shell, fill=PALETTE["thumb_shadow"], outline=PALETTE["surface_3"])
+                self.canvas.itemconfigure(cell, outline=PALETTE["border"], fill=PALETTE["thumb_bg"], width=1)
                 self.canvas.itemconfigure(image_item, state="normal")
                 if text_item is not None:
-                    self.canvas.itemconfigure(text_item, fill=PALETTE["text"])
+                    self.canvas.itemconfigure(text_item, fill=PALETTE["muted"])
 
     def copy_current_prompt(self) -> None:
         if not self.current_image_path:
