@@ -13,6 +13,7 @@ from collections import OrderedDict
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
+from ctypes import wintypes
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -29,10 +30,35 @@ STATE_SAVE_DEBOUNCE_MS = 420
 METADATA_WARMUP_BATCH = 64
 METADATA_PARSE_REV = 3
 APP_VERSION = "3.0.0"
+REVIEW_STATUSES = ("All", "Unreviewed", "Reject")
 UPDATE_REPO_OWNER = "ixxeg"
 UPDATE_REPO_NAME = "PromptLens"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/latest"
 GITHUB_RELEASES_PAGE = f"https://github.com/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases"
+METADATA_EMPTY_TEXT = "Select an image to inspect metadata\n\nUse single click for details and double-click for full preview."
+PREVIEW_EMPTY_TEXT = "Select an image to preview it here."
+PREVIEW_REVIEW_EMPTY_TEXT = "Enable Review Mode and select an image to preview it here."
+NO_MATCH_TEXT = "Nothing matched this filter\n\nTry a broader search, remove a tag filter, or disable favorites-only mode."
+NO_IMAGE_SELECTED_TITLE = "No image selected"
+
+FO_DELETE = 0x0003
+FOF_SILENT = 0x0004
+FOF_NOCONFIRMATION = 0x0010
+FOF_ALLOWUNDO = 0x0040
+FOF_NOERRORUI = 0x0400
+
+
+class SHFILEOPSTRUCTW(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", wintypes.HWND),
+        ("wFunc", wintypes.UINT),
+        ("pFrom", wintypes.LPCWSTR),
+        ("pTo", wintypes.LPCWSTR),
+        ("fFlags", ctypes.c_ushort),
+        ("fAnyOperationsAborted", wintypes.BOOL),
+        ("hNameMappings", wintypes.LPVOID),
+        ("lpszProgressTitle", wintypes.LPCWSTR),
+    ]
 
 
 def get_app_dir() -> Path:
@@ -431,6 +457,306 @@ class PreviewWindow(tk.Toplevel):
             self._wheel_flush_after_id = self.after(24, self._flush_wheel_zoom)
 
 
+class InlinePreviewPane(tk.Frame):
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent, bg=PALETTE["surface_1"])
+        self.image_path: Path | None = None
+        self.zoom = 1.0
+        self.min_zoom = 0.1
+        self.max_zoom = 8.0
+        self.base_image: Image.Image | None = None
+        self._image_pyramid: list[tuple[float, Image.Image]] = []
+        self.tk_image: ImageTk.PhotoImage | None = None
+        self._image_item: int | None = None
+        self._last_render_key: tuple[int, int, int, int, int] | None = None
+        self._pending_zoom: float | None = None
+        self._wheel_delta_accum = 0
+        self._wheel_flush_after_id: str | None = None
+        self._quality_after_id: str | None = None
+        self._load_token = 0
+        self._load_thread: threading.Thread | None = None
+        self.path_var = tk.StringVar(value="")
+        self._loading_item: int | None = None
+        self.zoom_var = tk.StringVar(value="100%")
+
+        self._build_ui()
+        self.clear(PREVIEW_REVIEW_EMPTY_TEXT)
+
+    def _build_ui(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        toolbar = tk.Frame(self, bg=PALETTE["surface_1"], padx=10, pady=10)
+        toolbar.grid(row=0, column=0, sticky="ew")
+        toolbar.columnconfigure(5, weight=1)
+
+        ttk.Button(toolbar, text="-", width=3, command=self.zoom_out).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(toolbar, text="+", width=3, command=self.zoom_in).grid(row=0, column=1, padx=(0, 10))
+        ttk.Button(toolbar, text="100%", command=self.reset_zoom).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(toolbar, text="Fit", command=self.fit_to_window).grid(row=0, column=3, padx=(0, 10))
+        ttk.Label(toolbar, textvariable=self.zoom_var, style="Muted.TLabel").grid(row=0, column=4, sticky="w", padx=(0, 12))
+        path_label = tk.Label(
+            toolbar,
+            textvariable=self.path_var,
+            bg=PALETTE["surface_1"],
+            fg=PALETTE["muted"],
+            font=("Segoe UI", 9),
+            anchor="e",
+        )
+        path_label.grid(row=0, column=5, sticky="ew")
+
+        content = tk.Frame(self, bg=PALETTE["surface_3"])
+        content.grid(row=1, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(content, background="#101010", highlightthickness=0)
+        self.v_scroll = ttk.Scrollbar(content, orient="vertical", command=self.canvas.yview)
+        self.h_scroll = ttk.Scrollbar(content, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
+
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.v_scroll.grid(row=0, column=1, sticky="ns")
+        self.h_scroll.grid(row=1, column=0, sticky="ew")
+        self._image_item = self.canvas.create_image(0, 0, anchor="nw")
+        self._loading_item = self.canvas.create_text(
+            0,
+            0,
+            text="Loading preview...",
+            fill="#f2f2f2",
+            font=("Segoe UI Semibold", 12),
+            state="hidden",
+        )
+
+        self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
+        self.canvas.bind("<Button-4>", self._on_mouse_wheel)
+        self.canvas.bind("<Button-5>", self._on_mouse_wheel)
+        self.canvas.bind("<ButtonPress-1>", lambda e: self.canvas.scan_mark(e.x, e.y))
+        self.canvas.bind("<B1-Motion>", lambda e: self.canvas.scan_dragto(e.x, e.y, gain=1))
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+    def clear(self, message: str = PREVIEW_EMPTY_TEXT) -> None:
+        self.image_path = None
+        self.base_image = None
+        self._image_pyramid = []
+        self.tk_image = None
+        self._last_render_key = None
+        self.path_var.set("")
+        self.zoom_var.set("100%")
+        if self._image_item is not None:
+            self.canvas.itemconfigure(self._image_item, image="")
+        self.canvas.configure(scrollregion=(0, 0, max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())))
+        self._show_loading(message)
+
+    def load_path(self, image_path: Path) -> None:
+        self.image_path = image_path
+        self.path_var.set(str(image_path))
+        self.zoom = 1.0
+        self._pending_zoom = None
+        self._last_render_key = None
+        self._cancel_quality_render()
+        self._start_load_image()
+
+    def _start_load_image(self) -> None:
+        if self.image_path is None:
+            return
+        self._load_token += 1
+        token = self._load_token
+        self.base_image = None
+        self._image_pyramid = []
+        self.tk_image = None
+        if self._image_item is not None:
+            self.canvas.itemconfigure(self._image_item, image="")
+        self.canvas.configure(scrollregion=(0, 0, max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())))
+        self._show_loading("Loading preview...")
+        self._load_thread = threading.Thread(
+            target=self._load_image_worker,
+            args=(self.image_path, token),
+            daemon=True,
+        )
+        self._load_thread.start()
+
+    def _load_image_worker(self, image_path: Path, token: int) -> None:
+        try:
+            with Image.open(image_path) as im:
+                base_image = ImageOps.exif_transpose(im).convert("RGB")
+            pyramid = PreviewWindow._build_image_pyramid(base_image)
+            self.after(0, lambda: self._on_image_loaded(token, image_path, base_image, pyramid))
+        except Exception as exc:  # noqa: BLE001
+            self.after(0, lambda: self._on_image_load_failed(token, exc))
+
+    def _on_image_loaded(
+        self,
+        token: int,
+        image_path: Path,
+        base_image: Image.Image,
+        pyramid: list[tuple[float, Image.Image]],
+    ) -> None:
+        if token != self._load_token or image_path != self.image_path:
+            return
+        self.base_image = base_image
+        self._image_pyramid = pyramid
+        self._hide_loading()
+        self.after_idle(self._fit_once_ready)
+
+    def _on_image_load_failed(self, token: int, exc: Exception) -> None:
+        if token != self._load_token:
+            return
+        self._show_loading(f"Cannot open preview.\n{exc}")
+
+    def _choose_render_source(self, target_w: int, target_h: int) -> tuple[float, Image.Image | None]:
+        if not self._image_pyramid:
+            return 1.0, self.base_image
+        source_scale, source_image = self._image_pyramid[0]
+        for scale, image in self._image_pyramid[1:]:
+            if image.width >= target_w and image.height >= target_h:
+                source_scale, source_image = scale, image
+                continue
+            break
+        return source_scale, source_image
+
+    def _show_loading(self, text: str) -> None:
+        if self._loading_item is None:
+            return
+        self.canvas.itemconfigure(self._loading_item, text=text, state="normal")
+        self._position_loading_item()
+
+    def _hide_loading(self) -> None:
+        if self._loading_item is not None:
+            self.canvas.itemconfigure(self._loading_item, state="hidden")
+
+    def _position_loading_item(self) -> None:
+        if self._loading_item is None:
+            return
+        x = max(20, self.canvas.winfo_width() // 2)
+        y = max(20, self.canvas.winfo_height() // 2)
+        self.canvas.coords(self._loading_item, x, y)
+
+    def _on_canvas_configure(self, _event: tk.Event) -> None:
+        self._position_loading_item()
+
+    def _fit_once_ready(self) -> None:
+        if self.base_image is None:
+            return
+        self.update_idletasks()
+        if self.canvas.winfo_width() <= 2 or self.canvas.winfo_height() <= 2:
+            self.after(30, self._fit_once_ready)
+            return
+        self.fit_to_window()
+
+    def _render(self, resample: int = Image.Resampling.LANCZOS) -> None:
+        if self.base_image is None:
+            return
+        w = max(1, int(self.base_image.width * self.zoom))
+        h = max(1, int(self.base_image.height * self.zoom))
+        _source_scale, source_image = self._choose_render_source(w, h)
+        if source_image is None:
+            return
+        render_key = (w, h, int(resample), source_image.width, source_image.height)
+        if self._last_render_key == render_key and self.tk_image is not None:
+            self.zoom_var.set(f"{int(self.zoom * 100)}%")
+            return
+        resized = source_image.resize((w, h), resample)
+        self.tk_image = ImageTk.PhotoImage(resized)
+        if self._image_item is None:
+            self._image_item = self.canvas.create_image(0, 0, anchor="nw")
+        self.canvas.itemconfigure(self._image_item, image=self.tk_image)
+        self.canvas.configure(scrollregion=(0, 0, w, h))
+        self.zoom_var.set(f"{int(self.zoom * 100)}%")
+        self._last_render_key = render_key
+
+    def zoom_in(self) -> None:
+        self.set_zoom(self.zoom * 1.15)
+
+    def zoom_out(self) -> None:
+        self.set_zoom(self.zoom / 1.15)
+
+    def reset_zoom(self) -> None:
+        self.set_zoom(1.0)
+
+    def fit_to_window(self) -> None:
+        if self.base_image is None:
+            return
+        self.update_idletasks()
+        cw = max(1, self.canvas.winfo_width())
+        ch = max(1, self.canvas.winfo_height())
+        zx = cw / self.base_image.width
+        zy = ch / self.base_image.height
+        self.set_zoom(min(zx, zy))
+        self.canvas.xview_moveto(0)
+        self.canvas.yview_moveto(0)
+
+    def set_zoom(self, value: float) -> None:
+        self._set_zoom(value, interactive=False)
+
+    def _set_zoom(self, value: float, interactive: bool) -> None:
+        clamped = max(self.min_zoom, min(self.max_zoom, value))
+        self._pending_zoom = clamped
+        if abs(clamped - self.zoom) < 1e-9:
+            if self.tk_image is None:
+                self._render(Image.Resampling.LANCZOS)
+                return
+            if interactive:
+                self._schedule_quality_render()
+            return
+        self.zoom = clamped
+        if interactive:
+            self._render(Image.Resampling.BILINEAR)
+            self._schedule_quality_render()
+        else:
+            self._cancel_quality_render()
+            self._render(Image.Resampling.LANCZOS)
+
+    def _schedule_quality_render(self) -> None:
+        if self._quality_after_id is not None:
+            self.after_cancel(self._quality_after_id)
+        self._quality_after_id = self.after(130, self._render_quality)
+
+    def _cancel_quality_render(self) -> None:
+        if self._quality_after_id is not None:
+            self.after_cancel(self._quality_after_id)
+            self._quality_after_id = None
+
+    def _render_quality(self) -> None:
+        self._quality_after_id = None
+        self._render(Image.Resampling.LANCZOS)
+
+    @staticmethod
+    def _wheel_step(event: tk.Event) -> int:
+        return PreviewWindow._wheel_step(event)
+
+    def _flush_wheel_zoom(self) -> None:
+        self._wheel_flush_after_id = None
+        delta = self._wheel_delta_accum
+        self._wheel_delta_accum = 0
+        if delta == 0:
+            return
+        ticks = int(delta / 120)
+        if ticks == 0:
+            ticks = 1 if delta > 0 else -1
+        base = self._pending_zoom if self._pending_zoom is not None else self.zoom
+        factor = 1.12 ** abs(ticks)
+        target = base * factor if ticks > 0 else base / factor
+        self._pending_zoom = target
+        self._set_zoom(target, interactive=True)
+
+    def _on_mouse_wheel(self, event: tk.Event) -> None:
+        self._wheel_delta_accum += self._wheel_step(event)
+        if self._wheel_flush_after_id is None:
+            self._wheel_flush_after_id = self.after(24, self._flush_wheel_zoom)
+
+    def destroy(self) -> None:
+        self._load_token += 1
+        if self._wheel_flush_after_id is not None:
+            try:
+                self.after_cancel(self._wheel_flush_after_id)
+            except Exception:
+                pass
+            self._wheel_flush_after_id = None
+        self._cancel_quality_render()
+        super().destroy()
+
+
 class ImageMetadataViewer(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -472,6 +798,8 @@ class ImageMetadataViewer(tk.Tk):
         self.search_var = tk.StringVar(value="")
         self.tag_filter_var = tk.StringVar(value="")
         self.favorites_only_var = tk.BooleanVar(value=False)
+        self.review_filter_var = tk.StringVar(value="All")
+        self.review_mode_var = tk.BooleanVar(value=False)
         self.sort_var = tk.StringVar(value="Newest")
         self._thumb_render_after_id: str | None = None
         self._thumb_batch_after_id: str | None = None
@@ -516,6 +844,12 @@ class ImageMetadataViewer(tk.Tk):
         self._summary_chip_hovered: dict[str, bool] = {}
         self._summary_chip_hover_border = self._mix_hex(PALETTE["accent_muted"], PALETTE["accent"], 0.75)
         self.gallery_status_var = tk.StringVar(value="")
+        self.review_status_var = tk.StringVar(value="Unreviewed")
+        self.right_panel_title_var = tk.StringVar(value="Inspector")
+        self._pending_focus_path: Path | None = None
+        self._delete_rejected_count = -1
+        self._delete_rejected_visible = False
+        self._delete_rejected_slot_width = 0
 
         self._load_state()
         self._thumb_last_applied_size = max(100, min(320, int(round(self.thumb_size_var.get()))))
@@ -591,6 +925,47 @@ class ImageMetadataViewer(tk.Tk):
             "Soft.TButton",
             background=[("active", PALETTE["surface_2"]), ("pressed", "#e4daf7")],
             bordercolor=[("active", PALETTE["accent"])],
+        )
+        self.style.configure(
+            "MiniSoft.TButton",
+            background=PALETTE["surface_1"],
+            foreground=PALETTE["text"],
+            bordercolor=PALETTE["border"],
+            padding=(10, 5),
+            relief="flat",
+            font=("Segoe UI", 9),
+        )
+        self.style.map(
+            "MiniSoft.TButton",
+            background=[("active", PALETTE["surface_2"])],
+            bordercolor=[("active", PALETTE["accent"])],
+        )
+        self.style.configure(
+            "MiniAccent.TButton",
+            background=PALETTE["accent"],
+            foreground="#ffffff",
+            bordercolor=PALETTE["accent"],
+            padding=(10, 5),
+            relief="flat",
+            font=("Segoe UI Semibold", 9),
+        )
+        self.style.map(
+            "MiniAccent.TButton",
+            background=[("active", PALETTE["accent_hover"]), ("pressed", PALETTE["accent_active"])],
+        )
+        self.style.configure(
+            "MiniDanger.TButton",
+            background="#fff8f8",
+            foreground=PALETTE["danger"],
+            bordercolor="#f3d4da",
+            padding=(8, 3),
+            relief="flat",
+            font=("Segoe UI Semibold", 8),
+        )
+        self.style.map(
+            "MiniDanger.TButton",
+            background=[("active", "#fdf0f2"), ("pressed", "#f9e5e9")],
+            bordercolor=[("active", PALETTE["danger"])],
         )
         self.style.configure(
             "TScrollbar",
@@ -1016,7 +1391,18 @@ class ImageMetadataViewer(tk.Tk):
         )
         self.favorites_only_chk.grid(row=0, column=4, sticky="w", padx=(0, 10))
 
-        tk.Label(filter_row, text="Sort", bg=PALETTE["surface_2"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=0, column=5, sticky="e", padx=(0, 6))
+        tk.Label(filter_row, text="Review", bg=PALETTE["surface_2"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=0, column=5, sticky="e", padx=(0, 6))
+        self.review_combo = ttk.Combobox(
+            filter_row,
+            textvariable=self.review_filter_var,
+            values=REVIEW_STATUSES,
+            state="readonly",
+            width=11,
+        )
+        self.review_combo.grid(row=0, column=6, sticky="w", padx=(0, 10))
+        self.review_combo.bind("<<ComboboxSelected>>", lambda _e: self.apply_filters())
+
+        tk.Label(filter_row, text="Sort", bg=PALETTE["surface_2"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=0, column=7, sticky="e", padx=(0, 6))
         self.sort_combo = ttk.Combobox(
             filter_row,
             textvariable=self.sort_var,
@@ -1024,11 +1410,11 @@ class ImageMetadataViewer(tk.Tk):
             state="readonly",
             width=10,
         )
-        self.sort_combo.grid(row=0, column=6, sticky="w", padx=(0, 10))
+        self.sort_combo.grid(row=0, column=8, sticky="w", padx=(0, 10))
         self.sort_combo.bind("<<ComboboxSelected>>", lambda _e: self.apply_filters())
 
         self.clear_filter_btn = ttk.Button(filter_row, text="[C] Clear filters", style="Soft.TButton", command=self._clear_filters)
-        self.clear_filter_btn.grid(row=0, column=7, sticky="w")
+        self.clear_filter_btn.grid(row=0, column=9, sticky="w")
         self._enable_button_hover_animation(self.clear_filter_btn, is_accent=False)
 
         self.folders_panel = tk.Frame(
@@ -1078,10 +1464,12 @@ class ImageMetadataViewer(tk.Tk):
         )
         gallery_shell.grid(row=0, column=0, sticky="nsew")
         gallery_shell.columnconfigure(0, weight=1)
-        gallery_shell.rowconfigure(1, weight=1)
+        gallery_shell.rowconfigure(2, weight=1)
         gallery_head = tk.Frame(gallery_shell, bg=PALETTE["surface_1"])
         gallery_head.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         gallery_head.columnconfigure(0, weight=1)
+        gallery_head.columnconfigure(1, weight=0)
+        gallery_head.columnconfigure(2, weight=0)
         tk.Label(
             gallery_head,
             text="Gallery",
@@ -1089,6 +1477,61 @@ class ImageMetadataViewer(tk.Tk):
             fg=PALETTE["text"],
             font=("Segoe UI Semibold", 14),
         ).grid(row=0, column=0, sticky="w")
+        gallery_actions = tk.Frame(gallery_head, bg=PALETTE["surface_1"])
+        gallery_actions.grid(row=0, column=1, sticky="e", padx=(12, 12))
+        gallery_actions.columnconfigure(0, weight=0)
+        self.review_main_row = tk.Frame(gallery_actions, bg=PALETTE["surface_1"])
+        self.review_main_row.grid(row=0, column=0, sticky="w")
+        self.review_mode_btn = ttk.Button(
+            self.review_main_row,
+            text="[V] Review mode",
+            style="MiniSoft.TButton",
+            command=self.toggle_review_mode,
+        )
+        self.review_mode_btn.pack(side="left", padx=(0, 8))
+        self.review_controls = tk.Frame(self.review_main_row, bg=PALETTE["surface_1"])
+        self.favorite_btn = ttk.Button(
+            self.review_controls,
+            text="[F] Favorite",
+            style="MiniSoft.TButton",
+            command=self.toggle_current_favorite,
+        )
+        self.favorite_btn.pack(side="left", padx=(0, 6))
+        self.reject_btn = ttk.Button(
+            self.review_controls,
+            text="[R] Reject",
+            style="MiniSoft.TButton",
+            command=lambda: self.set_current_review_status("reject"),
+        )
+        self.reject_btn.pack(side="left", padx=(0, 6))
+        self.reset_review_btn = ttk.Button(
+            self.review_controls,
+            text="[U] Reset",
+            style="MiniSoft.TButton",
+            command=lambda: self.set_current_review_status("unreviewed"),
+        )
+        self.reset_review_btn.pack(side="left", padx=(0, 8))
+        self.review_status_label = tk.Label(
+            self.review_controls,
+            textvariable=self.review_status_var,
+            bg=PALETTE["chip_soft_bg"],
+            fg=PALETTE["chip_soft_fg"],
+            font=("Segoe UI Semibold", 8),
+            padx=8,
+            pady=3,
+        )
+        self.review_status_label.pack(side="left")
+        self.review_delete_row = tk.Frame(gallery_actions, bg=PALETTE["surface_1"])
+        self.delete_rejected_slot = tk.Frame(self.review_delete_row, bg=PALETTE["surface_1"], width=150, height=1)
+        self.delete_rejected_slot.grid(row=0, column=0, sticky="w")
+        self.delete_rejected_slot.grid_propagate(False)
+        self.delete_rejected_btn = ttk.Button(
+            self.delete_rejected_slot,
+            text="Delete Rejected",
+            style="MiniDanger.TButton",
+            command=self.delete_rejected_images,
+        )
+        self.delete_rejected_btn.pack(fill="x")
         self.gallery_status = tk.Label(
             gallery_head,
             textvariable=self.gallery_status_var,
@@ -1096,10 +1539,10 @@ class ImageMetadataViewer(tk.Tk):
             fg=PALETTE["muted"],
             font=("Segoe UI", 9),
         )
-        self.gallery_status.grid(row=0, column=1, sticky="e")
+        self.gallery_status.grid(row=0, column=2, sticky="e")
 
         canvas_wrap = tk.Frame(gallery_shell, bg=PALETTE["surface_3"], bd=0)
-        canvas_wrap.grid(row=1, column=0, sticky="nsew")
+        canvas_wrap.grid(row=2, column=0, sticky="nsew")
         canvas_wrap.columnconfigure(0, weight=1)
         canvas_wrap.rowconfigure(0, weight=1)
 
@@ -1122,18 +1565,23 @@ class ImageMetadataViewer(tk.Tk):
         self.h_scroll.grid(row=1, column=0, sticky="ew")
 
         right.columnconfigure(0, weight=1)
-        right.rowconfigure(3, weight=1)
+        right.rowconfigure(1, weight=1)
 
         tk.Label(
             right,
-            text="Inspector",
+            textvariable=self.right_panel_title_var,
             bg=PALETTE["panel"],
             fg=PALETTE["text"],
             font=("Segoe UI Semibold", 16),
         ).grid(row=0, column=0, sticky="w", pady=(2, 8))
 
+        self.inspector_panel = tk.Frame(right, bg=PALETTE["panel"])
+        self.inspector_panel.grid(row=1, column=0, sticky="nsew")
+        self.inspector_panel.columnconfigure(0, weight=1)
+        self.inspector_panel.rowconfigure(2, weight=1)
+
         actions = tk.Frame(
-            right,
+            self.inspector_panel,
             bg=PALETTE["surface_1"],
             highlightthickness=1,
             highlightbackground=PALETTE["border"],
@@ -1141,17 +1589,14 @@ class ImageMetadataViewer(tk.Tk):
             padx=12,
             pady=10,
         )
-        actions.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        actions.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         actions.columnconfigure(1, weight=1)
 
         actions_top = tk.Frame(actions, bg=PALETTE["surface_1"])
-        actions_top.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        actions_top.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         self.copy_prompt_btn = ttk.Button(actions_top, text="[C] Copy prompt", style="Soft.TButton", command=self.copy_current_prompt)
-        self.copy_prompt_btn.pack(side="left", padx=(0, 8))
-        self.favorite_btn = ttk.Button(actions_top, text="[*] Favorite", style="Soft.TButton", command=self.toggle_current_favorite)
-        self.favorite_btn.pack(side="left")
+        self.copy_prompt_btn.pack(side="left")
         self._enable_button_hover_animation(self.copy_prompt_btn, is_accent=False)
-        self._enable_button_hover_animation(self.favorite_btn, is_accent=False)
 
         tk.Label(actions, text="Tags", bg=PALETTE["surface_1"], fg=PALETTE["muted"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
         self.current_tags_var = tk.StringVar(value="")
@@ -1162,7 +1607,7 @@ class ImageMetadataViewer(tk.Tk):
         self._enable_button_hover_animation(self.save_tags_btn, is_accent=False)
 
         self.inspector_summary = tk.Frame(
-            right,
+            self.inspector_panel,
             bg=PALETTE["surface_1"],
             highlightthickness=1,
             highlightbackground=PALETTE["border"],
@@ -1170,12 +1615,12 @@ class ImageMetadataViewer(tk.Tk):
             padx=12,
             pady=12,
         )
-        self.inspector_summary.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        self.inspector_summary.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         self.inspector_summary.columnconfigure(0, weight=1)
         self.inspector_summary.columnconfigure(1, weight=1)
         self.inspector_summary.columnconfigure(2, weight=1)
 
-        self.meta_file_var = tk.StringVar(value="No image selected")
+        self.meta_file_var = tk.StringVar(value=NO_IMAGE_SELECTED_TITLE)
         self.meta_path_var = tk.StringVar(value="")
         tk.Label(
             self.inspector_summary,
@@ -1228,7 +1673,7 @@ class ImageMetadataViewer(tk.Tk):
                 widget.bind("<Leave>", lambda _e, w=widget, f=field: self._on_summary_widget_leave(w, f), add="+")
 
         meta_wrap = tk.Frame(
-            right,
+            self.inspector_panel,
             bg=PALETTE["surface_1"],
             highlightthickness=1,
             highlightbackground=PALETTE["border"],
@@ -1236,7 +1681,7 @@ class ImageMetadataViewer(tk.Tk):
             padx=0,
             pady=0,
         )
-        meta_wrap.grid(row=3, column=0, sticky="nsew", pady=(0, 0))
+        meta_wrap.grid(row=2, column=0, sticky="nsew", pady=(0, 0))
         meta_wrap.columnconfigure(0, weight=1)
         meta_wrap.rowconfigure(1, weight=1)
 
@@ -1272,8 +1717,21 @@ class ImageMetadataViewer(tk.Tk):
         self.meta_scroll.grid(row=1, column=1, sticky="ns")
         self._configure_metadata_tags()
         self.meta_text.configure(state="disabled")
+
+        self.review_panel = tk.Frame(right, bg=PALETTE["panel"])
+        self.review_panel.columnconfigure(0, weight=1)
+        self.review_panel.rowconfigure(0, weight=1)
+        self.inline_preview = InlinePreviewPane(self.review_panel)
+        self.inline_preview.grid(row=0, column=0, sticky="nsew")
+
         self._sync_current_controls(None, None)
-        self._set_metadata_text("Select an image to inspect metadata\n\nUse single click for details and double-click for full preview.")
+        self._set_metadata_text(METADATA_EMPTY_TEXT)
+        self.bind("<KeyPress-r>", lambda _e: self._on_review_hotkey("reject"))
+        self.bind("<KeyPress-u>", lambda _e: self._on_review_hotkey("unreviewed"))
+        self.bind("<KeyPress-f>", lambda _e: self._on_favorite_hotkey())
+        self.bind("<KeyPress-F>", lambda _e: self._on_favorite_hotkey())
+        self.bind("<KeyPress-v>", lambda _e: self._on_review_mode_hotkey())
+        self._sync_review_mode_ui()
 
     def add_folder(self) -> None:
         selected = filedialog.askdirectory(title="Select a folder with images")
@@ -1407,6 +1865,7 @@ class ImageMetadataViewer(tk.Tk):
                 columns = str(ui.get("columns", DEFAULT_COLUMNS))
                 thumb_size = ui.get("thumb_size", DEFAULT_THUMB_SIZE)
                 sort_mode = str(ui.get("sort", "Newest"))
+                review_mode = str(ui.get("review_filter", "All"))
                 panel_visible = ui.get("folders_panel_visible", True)
                 if columns.isdigit():
                     self.columns_var.set(str(max(2, min(12, int(columns)))))
@@ -1414,20 +1873,34 @@ class ImageMetadataViewer(tk.Tk):
                     self.thumb_size_var.set(float(max(100, min(320, thumb_size))))
                 if sort_mode in {"Newest", "Oldest"}:
                     self.sort_var.set(sort_mode)
+                if review_mode in REVIEW_STATUSES:
+                    self.review_filter_var.set(review_mode)
                 if isinstance(panel_visible, bool):
                     self.folders_panel_visible = panel_visible
 
             raw = data.get("images", {})
             if isinstance(raw, dict):
                 for path_str, item in raw.items():
-                    if not isinstance(item, dict):
-                        continue
-                    favorite = bool(item.get("favorite", False))
-                    tags_raw = item.get("tags", [])
-                    tags = [str(tag).strip() for tag in tags_raw if str(tag).strip()] if isinstance(tags_raw, list) else []
-                    self.image_state[path_str] = {"favorite": favorite, "tags": tags}
+                    state_item = self._deserialize_image_state_item(item)
+                    if state_item is not None:
+                        self.image_state[path_str] = state_item
         except Exception:
             self.image_state = {}
+
+    def _deserialize_image_state_item(self, item: object) -> dict[str, object] | None:
+        if not isinstance(item, dict):
+            return None
+        favorite = bool(item.get("favorite", False))
+        tags_raw = item.get("tags", [])
+        tags = [str(tag).strip() for tag in tags_raw if str(tag).strip()] if isinstance(tags_raw, list) else []
+        review_status = str(item.get("review_status", "")).strip().lower()
+        state_item: dict[str, object] = {"favorite": favorite, "tags": tags}
+        # Legacy migration: old "keep" review marks now map to favorites.
+        if review_status == "keep":
+            state_item["favorite"] = True
+        elif review_status == "reject":
+            state_item["review_status"] = review_status
+        return state_item
 
     def _save_state(self) -> None:
         self._prune_image_state()
@@ -1437,6 +1910,7 @@ class ImageMetadataViewer(tk.Tk):
                 "columns": self._safe_columns(),
                 "thumb_size": int(round(self.thumb_size_var.get())),
                 "sort": self.sort_var.get(),
+                "review_filter": self.review_filter_var.get(),
                 "folders_panel_visible": bool(self.folders_panel_visible),
             },
             "images": self.image_state,
@@ -1468,10 +1942,26 @@ class ImageMetadataViewer(tk.Tk):
                 continue
             favorite = bool(state.get("favorite", False))
             tags = self._normalize_tags(state.get("tags", []))
-            if not favorite and not tags:
+            review_status = str(state.get("review_status", "")).strip().lower()
+            if not favorite and not tags and review_status != "reject":
                 continue
-            pruned[path_key] = {"favorite": favorite, "tags": tags}
+            item: dict[str, object] = {"favorite": favorite, "tags": tags}
+            if review_status == "reject":
+                item["review_status"] = review_status
+            pruned[path_key] = item
         self.image_state = pruned
+
+    @staticmethod
+    def _normalized_review_status(value: object) -> str:
+        status = str(value or "").strip().lower()
+        if status == "reject":
+            return status
+        return "unreviewed"
+
+    def _get_review_status(self, path: Path | None) -> str:
+        if path is None:
+            return "unreviewed"
+        return self._normalized_review_status(self._get_image_state(path).get("review_status", ""))
 
     @staticmethod
     def _normalize_tags(tags_raw: object) -> list[str]:
@@ -1625,24 +2115,33 @@ class ImageMetadataViewer(tk.Tk):
         self.search_var.set("")
         self.tag_filter_var.set("")
         self.favorites_only_var.set(False)
+        self.review_filter_var.set("All")
         self.sort_var.set("Newest")
         self.apply_filters()
+
+    def _show_empty_metadata_state(self) -> None:
+        self._set_metadata_text(METADATA_EMPTY_TEXT)
+
+    def _show_empty_preview_state(self, message: str = PREVIEW_EMPTY_TEXT) -> None:
+        if self.review_mode_var.get():
+            self.inline_preview.clear(message)
 
     def _schedule_apply_filters(self) -> None:
         if self._filter_after_id is not None:
             self.after_cancel(self._filter_after_id)
         self._filter_after_id = self.after(220, self.apply_filters)
 
-    def apply_filters(self) -> None:
+    def apply_filters(self, preserve_view: bool = False) -> None:
         self._filter_after_id = None
         if not self.all_image_paths:
             self._filter_token += 1
-            self._render_thumbnails([])
+            self._render_thumbnails([], preserve_view=preserve_view)
             return
 
         query = self.search_var.get().strip().lower()
         tag_filter = self.tag_filter_var.get().strip().lower()
         favorites_only = self.favorites_only_var.get()
+        review_filter = self.review_filter_var.get().strip()
         sort_mode = self.sort_var.get()
         self._filter_token += 1
         token = self._filter_token
@@ -1652,7 +2151,7 @@ class ImageMetadataViewer(tk.Tk):
 
         self._filter_worker_thread = threading.Thread(
             target=self._filter_worker,
-            args=(token, list(self.all_image_paths), query, tag_filter, favorites_only, sort_mode),
+            args=(token, list(self.all_image_paths), query, tag_filter, favorites_only, review_filter, sort_mode, preserve_view),
             daemon=True,
         )
         self._filter_worker_thread.start()
@@ -1664,7 +2163,9 @@ class ImageMetadataViewer(tk.Tk):
         query: str,
         tag_filter: str,
         favorites_only: bool,
+        review_filter: str,
         sort_mode: str,
+        preserve_view: bool,
     ) -> None:
         filtered: list[Path] = []
         for path in paths:
@@ -1672,8 +2173,13 @@ class ImageMetadataViewer(tk.Tk):
                 return
             state = self._get_image_state(path)
             favorite = bool(state.get("favorite", False))
+            review_status = self._get_review_status(path)
 
             if favorites_only and not favorite:
+                continue
+            if review_filter == "Unreviewed" and review_status != "unreviewed":
+                continue
+            if review_filter == "Reject" and review_status != "reject":
                 continue
             if tag_filter or query:
                 prompt_text, search_text = self._get_search_index_record(path)
@@ -1686,12 +2192,12 @@ class ImageMetadataViewer(tk.Tk):
 
         reverse = sort_mode != "Oldest"
         filtered.sort(key=self._sort_mtime_cached, reverse=reverse)
-        self.after(0, lambda: self._on_filters_ready(token, filtered))
+        self.after(0, lambda: self._on_filters_ready(token, filtered, preserve_view))
 
-    def _on_filters_ready(self, token: int, filtered: list[Path]) -> None:
+    def _on_filters_ready(self, token: int, filtered: list[Path], preserve_view: bool) -> None:
         if token != self._filter_token:
             return
-        self._render_thumbnails(filtered)
+        self._render_thumbnails(filtered, preserve_view=preserve_view)
 
     def scan_images(self) -> None:
         if not self.selected_dirs:
@@ -1861,9 +2367,10 @@ class ImageMetadataViewer(tk.Tk):
         if not self.image_paths:
             total = len(self.all_image_paths)
             self._set_status(f"No images found for current filter | Total indexed: {total}", "warn")
-            self._set_metadata_text("Nothing matched this filter\n\nTry a broader search, remove a tag filter, or disable favorites-only mode.")
+            self._set_metadata_text(NO_MATCH_TEXT)
             self.current_image_path = None
             self._sync_current_controls(None, None)
+            self._show_empty_preview_state("Nothing matched this filter.")
             self._thumb_rendering = False
             self._update_canvas_window_size()
             return
@@ -1960,13 +2467,19 @@ class ImageMetadataViewer(tk.Tk):
             self.canvas.xview_moveto(0)
 
         selected_path = self._thumb_render_selected_path
-        if selected_path and selected_path in self.image_paths:
+        if self._pending_focus_path and self._pending_focus_path in self.image_paths:
+            idx = self.image_paths.index(self._pending_focus_path)
+            self._pending_focus_path = None
+            self.on_thumbnail_click(idx)
+        elif selected_path and selected_path in self.image_paths:
             idx = self.image_paths.index(selected_path)
             self.on_thumbnail_click(idx)
         else:
+            self._pending_focus_path = None
             self.current_image_path = None
             self._sync_current_controls(None, None)
-            self._set_metadata_text("Select an image to inspect metadata\n\nUse single click for details and double-click for full preview.")
+            self._show_empty_metadata_state()
+            self._show_empty_preview_state()
 
         self._refresh_thumb_cell_highlight()
 
@@ -2117,6 +2630,7 @@ class ImageMetadataViewer(tk.Tk):
         self.canvas.tag_bind(tag, "<Enter>", lambda _evt, p=path: self._on_thumb_hover(p, True))
         self.canvas.tag_bind(tag, "<Leave>", lambda _evt, p=path: self._on_thumb_hover(p, False))
 
+        self._apply_thumb_visual_state(path, hovering=False)
         self.thumbnail_refs.append(thumb_img)
 
     def _render_skeleton_grid(self, total_count: int) -> None:
@@ -2251,10 +2765,13 @@ class ImageMetadataViewer(tk.Tk):
             return
         path = self.image_paths[index]
         metadata = self._get_metadata_cached(path)
-        panel = self._build_details_view(path, metadata)
         self.current_image_path = path
         self._sync_current_controls(path, metadata)
         self._refresh_thumb_cell_highlight()
+        if self.review_mode_var.get():
+            self.inline_preview.load_path(path)
+            return
+        panel = self._build_details_view(path, metadata)
         self._set_metadata_text(panel)
 
     def open_full_preview(self, index: int) -> None:
@@ -2271,59 +2788,67 @@ class ImageMetadataViewer(tk.Tk):
 
     def _on_thumb_hover(self, path: Path, entering: bool) -> None:
         key = str(path)
+        if entering:
+            self._hover_path_key = key
+            self.canvas.configure(cursor="hand2")
+        else:
+            if self._hover_path_key == key:
+                self._hover_path_key = None
+                self.canvas.configure(cursor="")
+        self._apply_thumb_visual_state(path, hovering=entering)
+
+    def _refresh_thumb_cell_highlight(self) -> None:
+        for key in self.thumb_cells_by_path:
+            self._apply_thumb_visual_state(Path(key), hovering=(key == self._hover_path_key))
+
+    def _review_thumb_palette(self, review_status: str) -> tuple[str, str]:
+        normalized = self._normalized_review_status(review_status)
+        if normalized == "reject":
+            return "#feebef", "#eab6c0"
+        return PALETTE["thumb_bg"], PALETTE["border"]
+
+    def _apply_thumb_visual_state(self, path: Path, hovering: bool) -> None:
+        key = str(path)
         shell = self.thumb_cells_by_path.get(key)
         cell = self.thumb_inner_by_path.get(key)
         widgets = self.thumb_widget_by_path.get(key)
         if shell is None or cell is None or not widgets:
             return
         image_item, text_item = widgets
-        if self.current_image_path and key == str(self.current_image_path):
-            self.canvas.itemconfigure(shell, fill=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.12), outline=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.12))
-            self.canvas.itemconfigure(cell, outline=PALETTE["accent_active"], fill=PALETTE["thumb_selected_bg"], width=2)
-            self.canvas.itemconfigure(image_item, state="normal")
-            if text_item is not None:
-                self.canvas.itemconfigure(text_item, fill=PALETTE["text"])
-            return
-        if entering:
-            self._hover_path_key = key
-            self.canvas.configure(cursor="hand2")
-            self.canvas.itemconfigure(shell, fill=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent"], 0.08), outline=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent"], 0.08))
-            self.canvas.itemconfigure(cell, outline=self._mix_hex(PALETTE["border"], PALETTE["accent"], 0.38), fill=PALETTE["thumb_hover_bg"], width=1)
-            if text_item is not None:
-                self.canvas.itemconfigure(text_item, fill=PALETTE["text"])
-        else:
-            if self._hover_path_key == key:
-                self._hover_path_key = None
-                self.canvas.configure(cursor="")
-            self.canvas.itemconfigure(shell, fill=PALETTE["thumb_shadow"], outline=PALETTE["surface_3"])
-            self.canvas.itemconfigure(cell, outline=PALETTE["border"], fill=PALETTE["thumb_bg"], width=1)
-            if text_item is not None:
-                self.canvas.itemconfigure(text_item, fill=PALETTE["muted"])
+        is_selected = self.current_image_path is not None and key == str(self.current_image_path)
+        review_fill, review_outline = self._review_thumb_palette(self._get_review_status(path))
 
-    def _refresh_thumb_cell_highlight(self) -> None:
-        selected_key = str(self.current_image_path) if self.current_image_path else ""
-        for key, shell in self.thumb_cells_by_path.items():
-            cell = self.thumb_inner_by_path.get(key)
-            widgets = self.thumb_widget_by_path.get(key)
-            if not widgets or cell is None:
-                continue
-            image_item, text_item = widgets
-            if key == selected_key:
-                self.canvas.itemconfigure(shell, fill=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.12), outline=self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent_active"], 0.12))
-                self.canvas.itemconfigure(cell, outline=PALETTE["accent_active"], fill=PALETTE["thumb_selected_bg"], width=2)
-                self.canvas.itemconfigure(image_item, state="normal")
-                if text_item is not None:
-                    self.canvas.itemconfigure(text_item, fill=PALETTE["text"])
-            else:
-                self.canvas.itemconfigure(shell, fill=PALETTE["thumb_shadow"], outline=PALETTE["surface_3"])
-                self.canvas.itemconfigure(cell, outline=PALETTE["border"], fill=PALETTE["thumb_bg"], width=1)
-                self.canvas.itemconfigure(image_item, state="normal")
-                if text_item is not None:
-                    self.canvas.itemconfigure(text_item, fill=PALETTE["muted"])
+        shell_fill = PALETTE["thumb_shadow"]
+        shell_outline = PALETTE["surface_3"]
+        cell_fill = review_fill
+        cell_outline = review_outline
+        cell_width = 1
+        text_fill = PALETTE["text"] if self._get_review_status(path) == "reject" else PALETTE["muted"]
+
+        if hovering:
+            shell_fill = self._mix_hex(PALETTE["thumb_shadow"], PALETTE["accent"], 0.08)
+            shell_outline = shell_fill
+            cell_fill = self._mix_hex(review_fill, PALETTE["thumb_hover_bg"], 0.48)
+            cell_outline = self._mix_hex(review_outline, PALETTE["accent"], 0.26)
+            text_fill = PALETTE["text"]
+
+        if is_selected:
+            shell_fill = self._mix_hex(shell_fill, PALETTE["accent_active"], 0.12)
+            shell_outline = shell_fill
+            cell_fill = self._mix_hex(review_fill, PALETTE["thumb_selected_bg"], 0.62)
+            cell_outline = PALETTE["accent_active"]
+            cell_width = 2
+            text_fill = PALETTE["text"]
+
+        self.canvas.itemconfigure(shell, fill=shell_fill, outline=shell_outline)
+        self.canvas.itemconfigure(cell, outline=cell_outline, fill=cell_fill, width=cell_width)
+        self.canvas.itemconfigure(image_item, state="normal")
+        if text_item is not None:
+            self.canvas.itemconfigure(text_item, fill=text_fill)
 
     def copy_current_prompt(self) -> None:
         if not self.current_image_path:
-            messagebox.showinfo("No image selected", "Select an image first.")
+            messagebox.showinfo(NO_IMAGE_SELECTED_TITLE, "Select an image first.")
             return
         metadata = self._get_metadata_cached(self.current_image_path)
         prompt = self._pick(metadata, ["Prompt"])
@@ -2399,53 +2924,292 @@ class ImageMetadataViewer(tk.Tk):
 
     def toggle_current_favorite(self) -> None:
         if not self.current_image_path:
-            messagebox.showinfo("No image selected", "Select an image first.")
+            messagebox.showinfo(NO_IMAGE_SELECTED_TITLE, "Select an image first.")
             return
-        state = self._get_image_state(self.current_image_path, create=True)
+        current_path = self.current_image_path
+        self._pending_focus_path = self._next_review_focus_path(current_path)
+        state = self._get_image_state(current_path, create=True)
         state["favorite"] = not bool(state.get("favorite", False))
-        self._prune_image_state()
-        self._schedule_save_state()
-        self._sync_current_controls(self.current_image_path, self._get_metadata_cached(self.current_image_path))
-        self.apply_filters()
+        is_favorite = bool(state.get("favorite", False))
+        self._apply_current_image_state_change(
+            current_path,
+            status_message=("Favorite added" if is_favorite else "Favorite removed"),
+        )
 
     def save_current_tags(self) -> None:
         if not self.current_image_path:
-            messagebox.showinfo("No image selected", "Select an image first.")
+            messagebox.showinfo(NO_IMAGE_SELECTED_TITLE, "Select an image first.")
             return
+        current_path = self.current_image_path
         raw = self.current_tags_var.get()
         tags = [part.strip() for part in raw.split(",") if part.strip()]
         unique = sorted(set(tags), key=lambda s: s.lower())
-        state = self._get_image_state(self.current_image_path, create=True)
+        state = self._get_image_state(current_path, create=True)
         state["tags"] = unique
+        self._apply_current_image_state_change(
+            current_path,
+            status_message=f"Saved tags: {', '.join(unique) if unique else 'None'}",
+            invalidate_search=True,
+        )
+
+    def _review_display(self, status: str) -> tuple[str, str, str]:
+        normalized = self._normalized_review_status(status)
+        if normalized == "reject":
+            return "Reject", "#fdebec", "#b64b5f"
+        return "Unreviewed", PALETTE["chip_soft_bg"], PALETTE["chip_soft_fg"]
+
+    def _apply_current_image_state_change(
+        self,
+        path: Path,
+        *,
+        status_message: str,
+        invalidate_search: bool = False,
+    ) -> None:
         self._prune_image_state()
-        self._invalidate_search_index(self.current_image_path)
+        if invalidate_search:
+            self._invalidate_search_index(path)
         self._schedule_save_state()
-        self._set_status(f"Saved tags: {', '.join(unique) if unique else 'None'}", "ok")
-        self.apply_filters()
+        self._set_status(status_message, "ok")
+        self._sync_current_controls(path, self._get_metadata_cached(path))
+        self.apply_filters(preserve_view=True)
+
+    def _rejected_paths(self) -> list[Path]:
+        return [path for path in self.all_image_paths if self._get_review_status(path) == "reject"]
+
+    def _sync_review_header_ui(self) -> None:
+        rejected_count = len(self._rejected_paths())
+        target_visible = self.review_mode_var.get() and rejected_count > 0
+
+        if rejected_count != self._delete_rejected_count:
+            self.delete_rejected_btn.configure(text=f"Delete Rejected ({rejected_count})")
+            self._delete_rejected_count = rejected_count
+            self.after_idle(self._finalize_delete_rejected_layout)
+
+        if target_visible != self._delete_rejected_visible:
+            if target_visible:
+                self.review_delete_row.grid(row=1, column=0, sticky="w", pady=(8, 0))
+            else:
+                self.review_delete_row.grid_remove()
+            self._delete_rejected_visible = target_visible
+
+    def _finalize_delete_rejected_layout(self) -> None:
+        try:
+            target_width = max(self.review_mode_btn.winfo_reqwidth(), self.delete_rejected_btn.winfo_reqwidth())
+        except Exception:
+            return
+        if target_width <= 0:
+            return
+        self._delete_rejected_slot_width = target_width
+        self.delete_rejected_slot.configure(width=target_width)
+
+    def _next_review_focus_path(self, current_path: Path | None) -> Path | None:
+        if current_path is None or current_path not in self.image_paths:
+            return None
+        idx = self.image_paths.index(current_path)
+        if idx + 1 < len(self.image_paths):
+            return self.image_paths[idx + 1]
+        if idx - 1 >= 0:
+            return self.image_paths[idx - 1]
+        return None
+
+    def _finalize_review_status(self, path: Path, status: str) -> None:
+        state = self._get_image_state(path, create=True)
+        normalized = self._normalized_review_status(status)
+        if normalized == "unreviewed":
+            state.pop("review_status", None)
+        else:
+            state["review_status"] = normalized
+        self._prune_image_state()
+        self._invalidate_search_index(path)
+
+    def set_current_review_status(self, status: str) -> None:
+        if not self.current_image_path:
+            messagebox.showinfo(NO_IMAGE_SELECTED_TITLE, "Select an image first.")
+            return
+        current_path = self.current_image_path
+        self._pending_focus_path = self._next_review_focus_path(current_path)
+        self._finalize_review_status(current_path, status)
+        label, _bg, _fg = self._review_display(status)
+        self._apply_current_image_state_change(
+            current_path,
+            status_message=f"Review status: {label}",
+        )
+
+    def _recycle_bin_delete(self, path: Path) -> bool:
+        if os.name != "nt":
+            return False
+        op = SHFILEOPSTRUCTW()
+        op.wFunc = FO_DELETE
+        op.pFrom = str(path) + "\0\0"
+        op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        return result == 0 and not bool(op.fAnyOperationsAborted)
+
+    def _next_path_after_deletion(self, deleted_keys: set[str]) -> Path | None:
+        if not self.image_paths:
+            return None
+        current = self.current_image_path
+        if current is None:
+            for path in self.image_paths:
+                if str(path) not in deleted_keys:
+                    return path
+            return None
+        try:
+            idx = self.image_paths.index(current)
+        except ValueError:
+            idx = -1
+        candidates = self.image_paths[idx + 1 :] + self.image_paths[:idx] if idx >= 0 else list(self.image_paths)
+        for path in candidates:
+            if str(path) not in deleted_keys:
+                return path
+        return None
+
+    def delete_rejected_images(self) -> None:
+        rejected = self._rejected_paths()
+        if not rejected:
+            self._set_status("No rejected images to delete", "warn")
+            self._sync_review_header_ui()
+            return
+        count = len(rejected)
+        confirmed = messagebox.askyesno(
+            "Delete rejected images",
+            f"Delete {count} rejected image{'s' if count != 1 else ''}?\n\nFiles will be moved to Recycle Bin.",
+            icon="warning",
+        )
+        if not confirmed:
+            return
+
+        deleted: list[Path] = []
+        failed: list[Path] = []
+        for path in rejected:
+            if self._recycle_bin_delete(path):
+                deleted.append(path)
+            else:
+                failed.append(path)
+
+        if not deleted:
+            messagebox.showerror("Delete failed", "Could not move rejected images to Recycle Bin.")
+            self._set_status("Delete rejected failed", "error")
+            return
+
+        deleted_keys = {str(path) for path in deleted}
+        self._pending_focus_path = self._next_path_after_deletion(deleted_keys)
+        self.all_image_paths = [path for path in self.all_image_paths if str(path) not in deleted_keys]
+        self.image_paths = [path for path in self.image_paths if str(path) not in deleted_keys]
+        self.image_root_map = {key: value for key, value in self.image_root_map.items() if key not in deleted_keys}
+        self.file_mtime_cache = {key: value for key, value in self.file_mtime_cache.items() if key not in deleted_keys}
+        for key in deleted_keys:
+            self.image_state.pop(key, None)
+        with self._cache_lock:
+            self.metadata_cache = {k: v for k, v in self.metadata_cache.items() if k not in deleted_keys}
+            self.metadata_cache_sig = {k: v for k, v in self.metadata_cache_sig.items() if k not in deleted_keys}
+            self.search_index_cache = {k: v for k, v in self.search_index_cache.items() if k not in deleted_keys}
+            self.thumbnail_cache = OrderedDict((k, v) for k, v in self.thumbnail_cache.items() if k[0] not in deleted_keys)
+        if self.current_image_path is not None and str(self.current_image_path) in deleted_keys:
+            self.current_image_path = None
+        self._schedule_save_state()
+        self.apply_filters(preserve_view=True)
+        if failed:
+            self._set_status(f"Deleted {len(deleted)} rejected, failed {len(failed)}", "warn")
+            messagebox.showwarning(
+                "Partial delete",
+                f"Moved {len(deleted)} rejected image{'s' if len(deleted) != 1 else ''} to Recycle Bin.\n"
+                f"Could not delete {len(failed)} file{'s' if len(failed) != 1 else ''}.",
+            )
+        else:
+            self._set_status(f"Deleted {len(deleted)} rejected image{'s' if len(deleted) != 1 else ''}", "ok")
+
+    def _focus_is_text_input(self) -> bool:
+        widget = self.focus_get()
+        if widget is None:
+            return False
+        return widget.winfo_class() in {"Entry", "TEntry", "Text", "TCombobox", "Spinbox", "TSpinbox"}
+
+    def _on_review_hotkey(self, status: str) -> None:
+        if self._focus_is_text_input():
+            return
+        self.set_current_review_status(status)
+
+    def _on_favorite_hotkey(self) -> None:
+        if self._focus_is_text_input():
+            return
+        self.toggle_current_favorite()
+
+    def _on_review_mode_hotkey(self) -> None:
+        if self._focus_is_text_input():
+            return
+        self.toggle_review_mode()
+
+    def toggle_review_mode(self) -> None:
+        self.review_mode_var.set(not self.review_mode_var.get())
+        self._sync_review_mode_ui()
+
+    def _sync_review_mode_ui(self) -> None:
+        review_enabled = self.review_mode_var.get()
+        self.right_panel_title_var.set("Review" if review_enabled else "Inspector")
+        if review_enabled:
+            if not self.review_controls.winfo_manager():
+                self.review_controls.pack(side="left", padx=(0, 8))
+            self.inspector_panel.grid_remove()
+            self.review_panel.grid(row=1, column=0, sticky="nsew")
+            self.review_mode_btn.configure(text="[V] Exit review", style="MiniAccent.TButton")
+            if self.current_image_path is not None:
+                self.inline_preview.load_path(self.current_image_path)
+            else:
+                self._show_empty_preview_state()
+        else:
+            if self.review_controls.winfo_manager():
+                self.review_controls.pack_forget()
+            self.review_panel.grid_remove()
+            self.inspector_panel.grid(row=1, column=0, sticky="nsew")
+            self.review_mode_btn.configure(text="[V] Review mode", style="MiniSoft.TButton")
+            if self.current_image_path is not None and self.current_image_path in self.image_paths:
+                metadata = self._get_metadata_cached(self.current_image_path)
+                self._set_metadata_text(self._build_details_view(self.current_image_path, metadata))
+            else:
+                self._show_empty_metadata_state()
+        self._sync_review_header_ui()
 
     def _sync_current_controls(self, path: Path | None, metadata: dict[str, str] | None) -> None:
         if path is None:
-            self.favorite_btn.configure(text="[*] Favorite")
+            self.favorite_btn.configure(text="[F] Favorite", style="MiniSoft.TButton")
             self.current_tags_var.set("")
             self.copy_prompt_btn.configure(state="disabled")
+            self.review_mode_btn.configure(state="normal")
             self.favorite_btn.configure(state="disabled")
+            self.reject_btn.configure(state="disabled")
+            self.reset_review_btn.configure(state="disabled")
             self.save_tags_btn.configure(state="disabled")
+            label, bg, fg = self._review_display("unreviewed")
+            self.review_status_var.set(label)
+            self.review_status_label.configure(bg=bg, fg=fg)
             self._update_inspector_summary(None, None)
+            self._sync_review_header_ui()
             return
 
         self.copy_prompt_btn.configure(state="normal")
+        self.review_mode_btn.configure(state="normal")
         self.favorite_btn.configure(state="normal")
+        self.reject_btn.configure(state="normal")
+        self.reset_review_btn.configure(state="normal")
         self.save_tags_btn.configure(state="normal")
         state = self._get_image_state(path)
         is_favorite = bool(state.get("favorite", False))
-        self.favorite_btn.configure(text="[*] Favorited" if is_favorite else "[*] Favorite")
+        self.favorite_btn.configure(
+            text="[F] Favorite",
+            style=("MiniAccent.TButton" if is_favorite else "MiniSoft.TButton"),
+        )
         tags = [str(x) for x in state.get("tags", []) if str(x).strip()]
         self.current_tags_var.set(", ".join(tags))
+        label, bg, fg = self._review_display(self._get_review_status(path))
+        self.review_status_var.set(label)
+        self.review_status_label.configure(bg=bg, fg=fg)
         self._update_inspector_summary(path, metadata)
+        self._sync_review_header_ui()
 
     def _update_inspector_summary(self, path: Path | None, metadata: dict[str, str] | None) -> None:
         if path is None or metadata is None:
-            self.meta_file_var.set("No image selected")
+            self.meta_file_var.set(NO_IMAGE_SELECTED_TITLE)
             self.meta_path_var.set("")
             for var in self.summary_value_vars.values():
                 var.set("-")
